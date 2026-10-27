@@ -15,12 +15,24 @@ The most direct signal is a worker exit:
 WARNING: [pool www] child 42 exited on signal 11 (SIGSEGV) after 1.2 seconds from start
 ```
 
-or, for the 86-byte hang:
+For the 86-byte hang, the log line depends on the pool configuration. With
+an explicit `request_terminate_timeout`:
 
 ```text
 WARNING: [pool www] child 43 execution timed out (15.0 sec), terminating
 WARNING: [pool www] child 43 exited on signal 15 (SIGTERM) after 15.1 seconds from start
 ```
+
+With the stock config there is no `request_terminate_timeout`; PHP-FPM's
+`max_execution_time = 30` is the fallback. The worker burns CPU for up to
+~30 seconds, then the master logs:
+
+```text
+WARNING: [pool www] child 10 exited with code 124 after 37.713889 seconds from start
+```
+
+Detect the 30-second window through CPU and worker-count metrics; the
+`code 124` exit is the post-hoc signal.
 
 Enable worker output capture:
 
@@ -28,15 +40,18 @@ Enable worker output capture:
 catch_workers_output = yes
 request_terminate_timeout = 15s
 request_slowlog_timeout = 5s
-slowlog = /proc/self/fd/2
+slowlog = /var/log/php-fpm/slow.log
 ```
 
 Alert on:
 
 * `exited on signal 11` / `SIGSEGV` in the PHP-FPM pool;
-* `execution timed out` followed by `SIGTERM`/`SIGKILL`;
-* a spike in worker respawns (`child ... exited on signal ...`) without a
-  deploy or OOM event;
+* `execution timed out` followed by `SIGTERM`/`SIGKILL` (only if
+  `request_terminate_timeout` is configured);
+* `exited with code 124` after ~30s on a request that never returned
+  (FPM `max_execution_time` fallback);
+* a spike in worker respawns (`child ... exited on signal ...` or
+  `exited with code 124`) without a deploy or OOM event;
 * `request_slowlog_timeout` entries pointing at `xmlrpc.php`.
 
 A single `SIGSEGV` is not normal. On a PHP-FPM host it deserves an

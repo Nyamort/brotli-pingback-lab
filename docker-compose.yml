@@ -47,8 +47,9 @@ services:
       # Lab-only SSRF allowlist for the Docker-internal `attacker` host.
       # It only affects the hostname "attacker"; see the file for details.
       - ./lab/wordpress/mu-plugins:/var/www/html/wp-content/mu-plugins:ro
-      # Explicit worker limits so a crash / hang is visible and bounded.
-      - ./lab/php-fpm/zz-lab.conf:/usr/local/etc/php-fpm.d/zz-lab.conf:ro
+      # The stock php-fpm www.conf is used by default (dynamic, 5 children,
+      # no request_terminate_timeout). Uncomment for the aggressive demo:
+      # - ./lab/php-fpm/zz-lab.example.conf:/usr/local/etc/php-fpm.d/zz-lab.conf:ro
     healthcheck:
       test: ["CMD-SHELL", "php -r 'exit(@fsockopen(\"127.0.0.1\", 9000) ? 0 : 1);'"]
       interval: 5s

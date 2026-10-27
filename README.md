@@ -9,7 +9,8 @@ URL. WordPress hands the response to libcurl, libcurl decodes
 kills the worker:
 
 * **86-byte payload** — non-progressing decoder loop, worker pinned at 100% CPU
-  until php-fpm kills it (`SIGTERM`, then `SIGKILL` if needed) (worker starvation).
+  for up to ~30s (PHP-FPM `max_execution_time`) or until a restart (worker
+  starvation).
 * **~23 MB payload** — out-of-bounds write in `BrotliDecoderState`, worker dies
   with **SIGSEGV** (signal 11).
 
@@ -34,8 +35,9 @@ make up          # build + start WordPress, MariaDB, nginx, payload server
 make probe       # confirm xmlrpc.php and pingback.ping
 make verify      # confirm the PHP/libcurl/Brotli stack is vulnerable
 
-make hang        # 86-byte payload: workers hang, php-fpm kills them
-make crash       # 23 MB payload: workers die with SIGSEGV
+make hang        # 86-byte payload: pin one worker at 100% CPU
+make crash       # 23 MB payload: one worker dies with SIGSEGV
+make restart     # clear stuck workers immediately (FPM 30s fallback also ends them)
 ```
 
 `make crash` expects log lines such as:
@@ -44,11 +46,18 @@ make crash       # 23 MB payload: workers die with SIGSEGV
 WARNING: [pool www] child 42 exited on signal 11 (SIGSEGV) after 1.2 seconds from start
 ```
 
-`make hang` expects:
+`make hang` expects a client timeout and a worker at 100% CPU. The stock
+php-fpm config has no `request_terminate_timeout`; PHP-FPM's
+`max_execution_time` (30s) is the fallback, so the worker exits later with
+code 124. `make restart` recovers immediately:
 
 ```text
-WARNING: [pool www] child 43 execution timed out (15.0 sec), terminating
-WARNING: [pool www] child 43 exited on signal 15 (SIGTERM) after 15.1 seconds from start
+[1] <- timeout after 12.0s
+[*] summary
+    hung                     1
+[*] note: the stock php-fpm config has no request_terminate_timeout;
+    PHP-FPM max_execution_time (30s) is the fallback. Use
+    `make restart` to recover immediately.
 ```
 
 ---
@@ -185,12 +194,16 @@ More: [`docs/attack-chain.md`](docs/attack-chain.md).
 
 | Mode | Payload | Result | Detection |
 |---|---|---|---|
-| `hang` | 86 B | libcurl/Brotli decode loop never progresses; PHP worker at 100% CPU; php-fpm kills it after `request_terminate_timeout` | `execution timed out`, `SIGTERM`, 100% CPU, 502s |
-| `crash` | ~23 MB | out-of-bounds write in `BrotliDecoderState`; PHP worker dies | `exited on signal 11 (SIGSEGV)`, 502 |
+| `hang` | 86 B | decode loop never progresses; worker pinned at 100% CPU. Stock config has no request timeout; FPM `max_execution_time` (~30s) ends it. 5 concurrent hangs occupy the default pool for ~30s | 100% CPU, `exited with code 124` after ~30s, 502s when the pool is exhausted |
+| `crash` | ~23 MB | out-of-bounds write in `BrotliDecoderState`; worker dies | `exited on signal 11 (SIGSEGV)`, 502 |
 | `probe` | — | confirms `xmlrpc.php` and `pingback.ping` exposure | — |
 
-With `pm.max_children = 4`, four concurrent pingbacks are enough to take the
-whole pool down. The PoC sends four by default.
+The stock image uses `pm = dynamic` with `pm.max_children = 5` and no
+`request_terminate_timeout`. A single crash is enough to prove the bug.
+`make crash-pool` and `make hang-pool` send five concurrent requests to
+exhaust the default pool; a hang occupies a worker for up to ~30s
+(`max_execution_time`), while a crash is immediate. `make restart` recreates
+the workers at once.
 
 ### Verified run (2026-10-27, x86-64)
 
@@ -209,12 +222,20 @@ WARNING: [pool www] child 49 exited on signal 11 (SIGSEGV - core dumped) after 1
 ```text
 $ make hang
 ...
-[1] <- HTTP 502 in 15.1s
+[1] <- timeout after 12.0s
 [*] summary
-    worker-killed            4
+    hung                     1
+[*] site after  : HTTP 200 in 0.0s (attack took 12.0s)
+[*] note: the stock php-fpm config has no request_terminate_timeout;
+    PHP-FPM max_execution_time (30s) is the fallback. Use
+    `make restart` to recover immediately.
 
-WARNING: [pool www] child 50 execution timed out (15.086883 sec), terminating
-WARNING: [pool www] child 50 exited on signal 15 (SIGTERM) after 508.458186 seconds from start
+$ docker stats --no-stream --format '{{.Name}} cpu={{.CPUPerc}}' \
+    $(docker compose ps -q wordpress)
+brotli-pingback-lab-wordpress-1 cpu=98.81%
+
+$ docker compose logs wordpress | grep 'exited with code'
+WARNING: [pool www] child 10 exited with code 124 after 37.713889 seconds from start
 ```
 
 The stack in the container was `libbrotli1 1.1.0-2+b7`, PHP 8.3.36,
@@ -256,7 +277,7 @@ for the details.
 ├── lab/
 │   ├── attacker/                # payload generator + HTTP server
 │   ├── nginx/                   # reverse proxy
-│   ├── php-fpm/                 # worker limits + timeout
+│   ├── php-fpm/                 # optional worker-limit example
 │   └── wordpress/mu-plugins/    # lab-only `attacker` SSRF allowlist
 ├── poc/pingback_poc.py          # probe / hang / crash client
 └── scripts/                     # vulnerability verification

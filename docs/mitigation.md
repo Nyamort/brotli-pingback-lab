@@ -166,7 +166,7 @@ behaviour observable.
 ; php-fpm
 request_terminate_timeout = 15s
 request_slowlog_timeout = 5s
-slowlog = /proc/self/fd/2
+slowlog = /var/log/php-fpm/slow.log
 pm.max_children = 20
 pm.max_requests = 500
 catch_workers_output = yes
@@ -174,6 +174,10 @@ catch_workers_output = yes
 
 * `request_terminate_timeout` kills the 86-byte hang. It does not stop the
   23 MB `SIGSEGV`; the worker is already gone.
+* The stock `www.conf` sets `request_terminate_timeout = 0`; PHP-FPM's
+  `max_execution_time = 30` is the only fallback, so a hang still burns a
+  full CPU core for up to ~30 seconds per request. Set an explicit request
+  timeout.
 * `pm.max_children` limits blast radius but also the number of requests an
   attacker needs to exhaust the pool.
 * `pm.max_requests` recycles workers and limits long-lived corruption.

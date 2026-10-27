@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.0.2 — 2026-10-27
+
+* Use the stock php-fpm `www.conf` by default (`pm = dynamic`,
+  `pm.max_children = 5`, no `request_terminate_timeout`). The 23 MB crash is
+  unchanged; a hang is bounded by FPM `max_execution_time` (30s, exit code
+  124).
+* Added `make crash-pool`, `make hang-pool`, and `make restart`.
+* The aggressive 4-worker/15s configuration is now an optional example
+  (`lab/php-fpm/zz-lab.example.conf`, commented-out volume).
+
 ## 1.0.1 — 2026-10-27
 
 * Removed the optional public tunnel profile, Makefile targets, and

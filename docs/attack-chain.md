@@ -222,7 +222,7 @@ remaining budget. A relay that decodes `br` cannot deliver this payload at all.
 
 ## 6. Impacts
 
-### 6.1 86-byte hang → worker starvation / SIGTERM
+### 6.1 86-byte hang → worker starvation
 
 The 22-byte input from Node.js' regression test reaches an impossible block
 switch. The vulnerable decoder returns `NEEDS_MORE_INPUT` without consuming
@@ -244,13 +244,18 @@ while ((nbytes || r == BROTLI_DECODER_RESULT_NEEDS_MORE_OUTPUT) && result == CUR
 
 With `nbytes > 0` and no progress, the loop spins. In the lab, curl's
 `CURLOPT_TIMEOUT` did not interrupt it (the timeout check is inside the
-decode loop and depends on progress bookkeeping). php-fpm's
-`request_terminate_timeout = 15s` is the backstop: the master sends
-`SIGTERM` to the stuck worker (and `SIGKILL` after `process_control_timeout`
-if it does not exit), logs `execution timed out`, and respawns it.
+decode loop and depends on progress bookkeeping).
 
-With `pm.max_children = 4`, four concurrent pingbacks occupy the whole pool.
-The site returns 502/504 until the workers are killed and reaped.
+The stock php-fpm config has no `request_terminate_timeout`. PHP-FPM still
+has `max_execution_time = 30`, so the worker burns CPU for up to ~30 seconds
+and the child then exits with code 124. A `request_terminate_timeout = 15s`
+shortens that window: the master sends `SIGTERM` (and `SIGKILL` after
+`process_control_timeout` if it does not exit), logs `execution timed out`,
+and respawns the worker.
+
+The stock pool is `pm = dynamic` with `pm.max_children = 5`. Five concurrent
+hangs occupy the whole pool for up to ~30 seconds. The site returns 502/504
+during that window, or until the workers are restarted with `make restart`.
 
 ### 6.2 23 MB tail → OOB write → SIGSEGV
 

