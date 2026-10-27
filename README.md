@@ -1,343 +1,137 @@
 # brotli-pingback-lab
 
-A reproducible Docker lab for **CVE-2026-111497** (out-of-bounds write in the
-Google Brotli decoder) reached through **WordPress XML-RPC pingback**.
+A small Docker lab for **CVE-2026-111497** (out-of-bounds write in the
+Google Brotli decoder), reached through **WordPress XML-RPC pingback**.
 
-One unauthenticated `pingback.ping` call makes WordPress fetch an attacker
-URL. WordPress hands the response to libcurl, libcurl decodes
+One unauthenticated `pingback.ping` makes WordPress fetch an attacker URL.
+WordPress hands the response to libcurl, libcurl decodes
 `Content-Encoding: br` inside the PHP worker, and a malformed Brotli stream
-kills the worker:
+kills or stalls the worker:
 
-* **86-byte payload** — non-progressing decoder loop, worker pinned at 100% CPU
-  for up to ~30s (PHP-FPM `max_execution_time`) or until a restart (worker
-  starvation).
-* **~23 MB payload** — out-of-bounds write in `BrotliDecoderState`, worker dies
-  with **SIGSEGV** (signal 11).
+| Payload | Impact |
+|---|---|
+| 86 bytes | decode loop never progresses; worker pinned at 100% CPU |
+| ~23 MB | out-of-bounds write in `BrotliDecoderState`; worker dies with **SIGSEGV** |
 
-The repo ships the lab, the payload server, the pingback PoC, and the
-write-up. It deliberately stops at denial of service / worker crash. **It does
-not contain an RCE exploit.**
+> **Lab only.** The PoC refuses targets that resolve to public IPs unless
+> `--i-own-this-target` is supplied. Do not use it on systems you do not own.
+> This project demonstrates availability impact; it contains **no RCE exploit**.
 
-> **Authorized lab use only.** The PoC refuses targets that resolve to public
-> IPs unless `--i-own-this-target` is supplied. Do not point it at systems you
-> do not own or have written permission to test.
-
----
-
-## TL;DR
+## Quickstart
 
 ```bash
 git clone <this-repo> brotli-pingback-lab
 cd brotli-pingback-lab
 cp .env.example .env
 
-make up          # build + start WordPress, MariaDB, nginx, payload server
-make probe       # confirm xmlrpc.php and pingback.ping
-make verify      # confirm the PHP/libcurl/Brotli stack is vulnerable
-
-make hang        # 86-byte payload: pin one worker at 100% CPU
-make crash       # 23 MB payload: one worker dies with SIGSEGV
-make restart     # clear stuck workers immediately (FPM 30s fallback also ends them)
+make up       # WordPress + MariaDB + nginx + payload server
+make probe    # xmlrpc.php and pingback.ping
+make verify   # confirm the Brotli stack is vulnerable
+make crash    # one SIGSEGV
+make hang     # one worker at 100% CPU (recover: make restart)
 ```
 
-`make crash` expects log lines such as:
+Expected crash log:
 
 ```text
-WARNING: [pool www] child 42 exited on signal 11 (SIGSEGV) after 1.2 seconds from start
+WARNING: [pool www] child 10 exited on signal 11 (SIGSEGV - core dumped)
 ```
 
-`make hang` expects a client timeout and a worker at 100% CPU. The stock
-php-fpm config has no `request_terminate_timeout`; PHP-FPM's
-`max_execution_time` (30s) is the fallback, so the worker exits later with
-code 124. `make restart` recovers immediately:
+Expected hang:
 
 ```text
 [1] <- timeout after 12.0s
-[*] summary
-    hung                     1
-[*] note: the stock php-fpm config has no request_terminate_timeout;
-    PHP-FPM max_execution_time (30s) is the fallback. Use
-    `make restart` to recover immediately.
+brotli-pingback-lab-wordpress-1 cpu=99.29%
 ```
 
----
+The lab uses the **stock php-fpm config** (`pm = dynamic`,
+`pm.max_children = 5`, no `request_terminate_timeout`). A crash is immediate.
+A hang is ended by PHP-FPM's `max_execution_time` (30s, exit code 124);
+`make restart` recovers immediately.
 
-## Architecture
+## The chain
+
+1. The attacker POSTs `pingback.ping` to `/xmlrpc.php` with
+   `sourceURI = https://attacker.example/payload.br` and a target post URL.
+2. `pingback_ping()` calls `wp_safe_remote_get()` after a one-second sleep.
+3. Requests' cURL transport sets `CURLOPT_ENCODING = ''`, so libcurl accepts
+   and decodes `br` in-process.
+4. libcurl decodes the attacker body **inside the PHP worker**, before
+   WordPress parses it.
+5. The malformed stream spins the decoder or corrupts its state.
+
+The pingback response cap (`limit_response_size = 153600`) applies to
+**decompressed** bytes. The 23 MB trigger decodes to zero bytes until its
+final 127-byte tail, so the cap never trips. The tail must arrive in a
+separate decoder call; the payload server sends it as a second HTTP chunk
+after a one-second delay.
+
+## Why crash-only?
+
+CVE-2026-111497 is a memory-safety bug, and public research demonstrates RCE
+in Node.js with a deterministic heap layout. In the WordPress path the write
+is relative to the Brotli ring buffer, the allocator differs, and the
+attacker gets no feedback from the decoded body. A blind remote RCE is not
+established, so this lab stops at the SIGSEGV / worker stall. No heap
+grooming or pointer leak is included.
+
+## Verified results (x86-64, 2026-10-27)
+
+Crash:
 
 ```text
-                    +---------------------------------------------+
-                    |  Docker network: brotli-pingback-lab        |
-                    |                                             |
-  PoC (host)        |   +-----------+        +----------------+  |
-  python3  ---------+-->|  nginx    |------->|  wordpress     |  |
-  pingback.ping     |   |  :8080    |  fastcgi|  php8.3-fpm    |  |
-  sourceURI=...     |   +-----------+        |  libbrotli 1.1 |  |
-                    |                        +--------+-------+  |
-                    |                                 |          |
-                    |                     wp_safe_remote_get     |
-                    |                     (Content-Encoding: br)  |
-                    |                                 v          |
-                    |                        +----------------+  |
-                    |                        |  attacker      |  |
-                    |                        |  payload srv   |  |
-                    |                        |  86 B / 23 MB  |  |
-                    |                        +----------------+  |
-                    +---------------------------------------------+
+[1] <- HTTP 502 in 2.7s
+    crashed    1
+WARNING: [pool www] child 10 exited on signal 11 (SIGSEGV - core dumped)
 ```
 
-The WordPress site is exposed on `http://localhost:8080`. The payload server
-is exposed on `http://localhost:8081` for debugging and is also reachable by
-WordPress as `http://attacker:8080` on the Docker network.
-
----
-
-## The vulnerability in 60 seconds
-
-Brotli metablocks use three block categories: literals, insert/copy commands,
-and distances. Each category has a set of block types and a block length.
-When a block length reaches zero, the decoder reads a **block switch**.
-
-In `c/dec/decode.c`, `DecodeBlockTypeAndLength()` returned `BROTLI_FALSE`
-when `num_block_types <= 1`, i.e. when the stream asked for a block switch
-that its own structure made impossible. The callers used `BROTLI_SAFE()`,
-which treated that `FALSE` as “needs more input” (and, on the fast path,
-ignored the return value). Decoding continued with an invalid internal state.
-
-The upstream fix (commit `0ed4268a4401abcb44720963`, “Detect and report
-invalid stream earlier”) introduces
-`BROTLI_DECODER_ERROR_FORMAT_BLOCK_SWITCH` and propagates it through a new
-`BROTLI_SAFE_WITH_STATUS()` macro, so the invalid transition is a format
-error instead of undefined behaviour.
-
-| | |
-|---|---|
-| CVE | [CVE-2026-111497](https://nvd.nist.gov/vuln/detail/CVE-2026-111497) |
-| Type | CWE-787 out-of-bounds write, CWE-252 unchecked return value |
-| Severity | 9.2 Critical (CVSS 4.0), AV:N/AC:L/PR:N/UI:N |
-| Affected | Google Brotli 1.0.3 – 1.2.0 |
-| Fixed | Brotli 1.0.10, 1.1.1, 1.2.1 |
-| Runtime fixes | Node.js 22.23.4, 24.22.1, 26.12.1; rebuilt curl/PHP images |
-| Public names | Node2Shell, HTTP2Shell |
-
-The flaw is in the **library**, not in WordPress. Any HTTP client that
-auto-decodes `Content-Encoding: br` from an untrusted peer is a potential
-sink. WordPress pingback happens to be a very convenient unauthenticated
-way to make a PHP process do exactly that.
-
-More: [`docs/vulnerability.md`](docs/vulnerability.md).
-
----
-
-## The WordPress chain
-
-`wp-includes/class-wp-xmlrpc-server.php`, `pingback_ping()`:
-
-```php
-$http_api_args = array(
-    'timeout'             => 10,
-    'redirection'         => 0,
-    'limit_response_size' => 153600, // 150 KB
-    'user-agent'          => "$user_agent; verifying pingback from $remote_ip",
-    ...
-);
-$request       = wp_safe_remote_get( $pagelinkedfrom, $http_api_args );
-$remote_source = wp_remote_retrieve_body( $request );
-```
-
-1. An unauthenticated attacker POSTs `pingback.ping` to `/xmlrpc.php` with
-   `sourceURI = https://attacker.example/payload.br` and
-   `targetURI = https://victim.example/?p=1`.
-2. WordPress validates the target, sleeps one second, then fetches the
-   source URL with `wp_safe_remote_get()`.
-3. WordPress's bundled Requests library uses the cURL transport. It sets
-   `CURLOPT_ENCODING = ''` (`wp-includes/Requests/src/Transport/Curl.php`),
-   which enables every compression encoding libcurl was built with —
-   including `br` when libcurl links `libbrotlidec`.
-4. libcurl sees `Content-Encoding: br` and decodes the body **inside the PHP
-   worker**, before WordPress ever looks at the HTML.
-5. The malformed stream triggers the decoder bug:
-   * small payload → decoder makes no progress → libcurl's
-     `brotli_do_write()` loop spins;
-   * large payload → decoder state corruption → out-of-bounds write →
-     `SIGSEGV`.
-
-### Wait — doesn't pingback cap the response at 150 KB?
-
-Yes, and this is the interesting part. `limit_response_size => 153600` is
-mapped by WordPress to Requests' `max_bytes`
-(`wp-includes/class-wp-http.php`). The cURL transport enforces it in
-`stream_body()` — on **decompressed** chunks:
-
-```php
-if ( ($this->response_bytes + $data_length) > $this->response_byte_limit ) {
-    $data = substr( $data, 0, $this->response_byte_limit - $this->response_bytes );
-}
-// ...
-$this->response_bytes += strlen( $data );
-return $data_length;   // note: original length, so curl does not abort
-```
-
-The 23 MB trigger produces **zero decoded bytes** until its final 127-byte
-tail. The 150 KB budget is therefore untouched, and because `stream_body()`
-returns the original length, curl keeps downloading and decoding. The cap
-protects against classic decompression bombs (large output); it does not
-protect against a zero-output memory-corruption trigger.
-
-The 86-byte payload is obviously far below the cap. It produces no output at
-all; the worker simply never returns.
-
-More: [`docs/attack-chain.md`](docs/attack-chain.md).
-
----
-
-## What the lab demonstrates
-
-| Mode | Payload | Result | Detection |
-|---|---|---|---|
-| `hang` | 86 B | decode loop never progresses; worker pinned at 100% CPU. Stock config has no request timeout; FPM `max_execution_time` (~30s) ends it. 5 concurrent hangs occupy the default pool for ~30s | 100% CPU, `exited with code 124` after ~30s, 502s when the pool is exhausted |
-| `crash` | ~23 MB | out-of-bounds write in `BrotliDecoderState`; worker dies | `exited on signal 11 (SIGSEGV)`, 502 |
-| `probe` | — | confirms `xmlrpc.php` and `pingback.ping` exposure | — |
-
-The stock image uses `pm = dynamic` with `pm.max_children = 5` and no
-`request_terminate_timeout`. A single crash is enough to prove the bug.
-`make crash-pool` and `make hang-pool` send five concurrent requests to
-exhaust the default pool; a hang occupies a worker for up to ~30s
-(`max_execution_time`), while a crash is immediate. `make restart` recreates
-the workers at once.
-
-### Verified run (2026-10-27, x86-64)
+Hang:
 
 ```text
-$ make crash
-...
-[1] <- HTTP 502 in 2.5s
-[*] summary
-    crashed                  1
-[!] 1 request(s) look like worker crashes
-
-$ docker compose logs wordpress | grep -E 'SIGSEGV|timed out'
-WARNING: [pool www] child 49 exited on signal 11 (SIGSEGV - core dumped) after 15.590566 seconds from start
-```
-
-```text
-$ make hang
-...
 [1] <- timeout after 12.0s
-[*] summary
-    hung                     1
-[*] site after  : HTTP 200 in 0.0s (attack took 12.0s)
-[*] note: the stock php-fpm config has no request_terminate_timeout;
-    PHP-FPM max_execution_time (30s) is the fallback. Use
-    `make restart` to recover immediately.
-
-$ docker stats --no-stream --format '{{.Name}} cpu={{.CPUPerc}}' \
-    $(docker compose ps -q wordpress)
-brotli-pingback-lab-wordpress-1 cpu=98.81%
-
-$ docker compose logs wordpress | grep 'exited with code'
-WARNING: [pool www] child 10 exited with code 124 after 37.713889 seconds from start
+    hung       1
+brotli-pingback-lab-wordpress-1 cpu=99.29%
 ```
 
-The stack in the container was `libbrotli1 1.1.0-2+b7`, PHP 8.3.36,
-libcurl 8.14.1, Brotli feature enabled.
+Stack: PHP 8.3.36, libcurl 8.14.1, `libbrotli1 1.1.0-2+b7`, Brotli enabled.
 
----
-
-## Why no RCE?
-
-The public research shows code execution in Node.js with deterministic heap
-layout (ASLR disabled / `--predictable`). The write primitive is relative to
-the Brotli ring buffer; blind remote exploitation needs an information leak
-or a predictable wrap compensation. Public analyses explicitly stop at
-“remote blind RCE not established” for the generic case.
-
-This lab intentionally does not implement heap grooming, pointer leaks, or a
-`free_func` hijack. The crash tail sets `pos` to a wild negative value so the
-16-byte ring copy faults immediately. That is enough to prove the PHP worker
-is reachable and killable through pingback, without shipping an exploit.
-
-See [`docs/vulnerability.md`](docs/vulnerability.md#why-this-lab-stops-at-a-crash)
-for the details.
-
----
-
-## Repository layout
+## Layout
 
 ```text
 .
-├── docker-compose.yml           # WordPress + MariaDB + nginx + attacker
-├── Makefile                     # one-command lab workflow
+├── docker-compose.yml        # db, wordpress, nginx, attacker, wp-init
+├── Makefile                  # up / probe / verify / crash / hang / restart
 ├── docs/
-│   ├── vulnerability.md         # CVE, root cause, affected versions
-│   ├── attack-chain.md          # WordPress pingback -> libcurl -> Brotli
-│   ├── lab.md                   # setup, services, troubleshooting
-│   ├── poc.md                   # PoC usage and expected output
-│   ├── detection.md             # logs, metrics, WAF/egress rules
-│   └── mitigation.md            # patching and compensating controls
+│   ├── vulnerability.md      # CVE, root cause, chain, references
+│   └── lab.md                # setup, usage, logs, detection, mitigation
 ├── lab/
-│   ├── attacker/                # payload generator + HTTP server
-│   ├── nginx/                   # reverse proxy
-│   ├── php-fpm/                 # optional worker-limit example
-│   └── wordpress/mu-plugins/    # lab-only `attacker` SSRF allowlist
-├── poc/pingback_poc.py          # probe / hang / crash client
-└── scripts/                     # vulnerability verification
+│   ├── attacker/             # payload generator + HTTP server
+│   ├── nginx/default.conf
+│   └── wordpress/mu-plugins/ # lab-only attacker-host allowlist
+├── poc/pingback_poc.py       # probe / hang / crash client
+├── scripts/verify-vulnerable.sh
+└── tests/test_payload.py
 ```
-
----
-
-## Requirements
-
-* Docker Engine 24+ with Compose v2
-* Python 3.10+ (PoC and payload generator; standard library only)
-* ~1.5 GB disk for images, ~200 MB RAM for the lab
-* Internet access only to pull the Docker images
-
-Tested on Linux x86-64. The crash tail depends on the x86-64
-`BrotliDecoderState` layout of Brotli 1.1.0/1.2.0; the pinned WordPress
-image supplies exactly that.
-
----
 
 ## Docs
 
-* [Vulnerability](docs/vulnerability.md) — CVE-2026-111497, root cause, patch
-* [Attack chain](docs/attack-chain.md) — pingback → `wp_safe_remote_get` → libcurl → Brotli
-* [Lab](docs/lab.md) — services, setup, troubleshooting
-* [PoC](docs/poc.md) — modes, options, expected results
-* [Detection](docs/detection.md) — what to log and alert on
-* [Mitigation](docs/mitigation.md) — patch first, then compensating controls
+* [Vulnerability](docs/vulnerability.md) — CVE-2026-111497, root cause, chain
+* [Lab](docs/lab.md) — setup, modes, expected output, detection, mitigation
 
----
+## Safety
 
-## Ethics and scope
-
-This project is for defenders, students, and vulnerability researchers. It
-was built to make a runtime-level bug visible in a realistic web stack, not
-to provide a weapon.
-
-* The PoC is rate-limited to 32 requests and refuses public targets by default.
-* The payload is crash-only; there is no RCE chain.
-* The lab's WordPress image is the official image plus a 10-line mu-plugin
+* The PoC is capped at 32 concurrent requests and refuses public targets by
+  default.
+* The lab's WordPress admin password is `admin`; keep it local.
+* The only addition to the official WordPress image is a 10-line mu-plugin
   that allowlists the Docker-internal `attacker` hostname. Remove it if you
-  serve the payload from a public host and want a completely stock install.
-* The lab is local-only. Do not expose the WordPress container or the payload
-  server to the Internet.
-
-See [SECURITY.md](SECURITY.md).
-
----
+  serve the payload from a public host.
 
 ## Credits
 
-* Google Brotli maintainers and the CVE-2026-111497 reporters
-  (OpenAI Codex Security — Khai Tran and Sylvie Mayer).
-* Node.js security team; the 22-byte regression input is from
-  `test/parallel/test-zlib-invalid-input.js`.
-* Imperva Red Team (“Node2Shell”), Red Hat (`RHSB-2026-015`), Akamai, Wiz,
-  and the other public analyses.
-* `TheFool-TAROT/CVE-2026-111497-brotli-pwn` and
-  `dimasma0305/CVE-2026-111497-POC` for public stream-format research.
-* WordPress and curl maintainers, whose source made the chain easy to follow.
+Google Brotli maintainers and the CVE reporters; the Node.js security team
+and its regression test; Imperva, Red Hat, Akamai, and Wiz for the public
+analysis; `TheFool-TAROT` and `dimasma0305` for the stream-format research.
 
 ## License
 

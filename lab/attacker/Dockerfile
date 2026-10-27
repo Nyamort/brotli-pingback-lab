@@ -1,17 +1,9 @@
-# Payload server for the brotli-pingback-lab.
-#
-# The 23 MB crash payload is generated at container start, not baked into
-# the image, so the repository never stores a large binary artifact.
 FROM python:3.12-slim
 
-ENV PYTHONUNBUFFERED=1 \
-    PORT=8080 \
-    CHUNK_DELAY=1.0 \
-    PAYLOAD_DIR=/payloads
+ENV PYTHONUNBUFFERED=1 PORT=8080 CHUNK_DELAY=1.0
 
 WORKDIR /app
 COPY payload.py server.py ./
-RUN mkdir -p /payloads
 
 EXPOSE 8080
 

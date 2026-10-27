@@ -1,32 +1,16 @@
 name: ci
 
-on:
-  push:
-  pull_request:
-
-permissions:
-  contents: read
+on: [push, pull_request]
 
 jobs:
-  python:
+  test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Compile
-        run: python -m compileall -q poc lab/attacker tests
-      - name: Payload tests
-        run: python -m unittest discover -s tests -v
-      - name: CLI help
-        run: python poc/pingback_poc.py --help >/dev/null
-
-  compose:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Validate docker-compose.yml
-        run: docker compose config >/dev/null
-      - name: Validate shell scripts
-        run: bash -n scripts/verify-vulnerable.sh
+      - run: python -m compileall -q poc lab/attacker tests
+      - run: python -m unittest discover -s tests -v
+      - run: docker compose config >/dev/null
+      - run: bash -n scripts/verify-vulnerable.sh

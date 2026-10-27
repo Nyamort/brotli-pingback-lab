@@ -1,10 +1,7 @@
 name: brotli-pingback-lab
 
 # CVE-2026-111497 WordPress XML-RPC pingback lab.
-#
-# Default mode is fully local: WordPress talks to the `attacker` service over
-# the Docker network.  The image is the official WordPress FPM image, pinned
-# to the digest that shipped the vulnerable libbrotlidec 1.1.0.
+# Local only: WordPress fetches the payload from the `attacker` service.
 
 services:
   db:
@@ -24,8 +21,7 @@ services:
       retries: 30
 
   wordpress:
-    # Official WordPress image, no plugins or themes added by this lab.
-    # Pinned to the October 2026 digest (libbrotlidec 1.1.0-2+b7).
+    # Official image, pinned to the October 2026 digest (libbrotlidec 1.1.0).
     image: wordpress:php8.3-fpm@sha256:96b154deba743be45b87dfe45a1fd7b8f6c83a7899ace4b6cede8e514a0292bc
     restart: unless-stopped
     depends_on:
@@ -44,12 +40,8 @@ services:
         define('WP_DEBUG_DISPLAY', false);
     volumes:
       - wp_data:/var/www/html
-      # Lab-only SSRF allowlist for the Docker-internal `attacker` host.
-      # It only affects the hostname "attacker"; see the file for details.
+      # Lab-only allowlist for the Docker-internal `attacker` host.
       - ./lab/wordpress/mu-plugins:/var/www/html/wp-content/mu-plugins:ro
-      # The stock php-fpm www.conf is used by default (dynamic, 5 children,
-      # no request_terminate_timeout). Uncomment for the aggressive demo:
-      # - ./lab/php-fpm/zz-lab.example.conf:/usr/local/etc/php-fpm.d/zz-lab.conf:ro
     healthcheck:
       test: ["CMD-SHELL", "php -r 'exit(@fsockopen(\"127.0.0.1\", 9000) ? 0 : 1);'"]
       interval: 5s
@@ -69,16 +61,12 @@ services:
       - ./lab/nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
 
   attacker:
-    build:
-      context: ./lab/attacker
+    build: ./lab/attacker
     restart: unless-stopped
     environment:
       PORT: "8080"
       CHUNK_DELAY: "${CHUNK_DELAY:-1.0}"
-      PAYLOAD_DIR: /payloads
     ports:
-      # Optional host access for debugging; WordPress itself uses
-      # http://attacker:8080 over the Docker network.
       - "${ATTACKER_PORT:-8081}:8080"
     healthcheck:
       test:
@@ -94,8 +82,6 @@ services:
 
   wp-init:
     image: wordpress:cli
-    # Started explicitly by `make up` / `make init` (docker compose run).
-    # Keeping it behind a profile avoids two concurrent installers.
     profiles: ["init"]
     depends_on:
       wordpress:
@@ -108,8 +94,6 @@ services:
     environment:
       HOME: /tmp
       WP_URL: "http://localhost:${WP_PORT:-8080}"
-      # wp-config.php uses getenv_docker(), so the CLI container needs the
-      # same database variables as the WordPress container.
       WORDPRESS_DB_HOST: db:3306
       WORDPRESS_DB_USER: wordpress
       WORDPRESS_DB_PASSWORD: wordpress
@@ -120,45 +104,24 @@ services:
     command:
       - |
         set -u
-        echo "[init] waiting for wp-config.php"
         for i in $$(seq 1 90); do
           [ -f /var/www/html/wp-config.php ] && break
           sleep 2
         done
-
-        echo "[init] waiting for the database"
         for i in $$(seq 1 60); do
           wp db check --allow-root >/dev/null 2>&1 && break
           sleep 3
         done
-
-        if ! wp core is-installed --allow-root >/dev/null 2>&1; then
-          echo "[init] installing WordPress"
-          wp core install \
-            --url="$${WP_URL}" \
-            --title="Brotli Pingback Lab" \
-            --admin_user="admin" \
-            --admin_password="admin" \
-            --admin_email="admin@example.test" \
-            --skip-email \
-            --allow-root
-        fi
-
+        wp core is-installed --allow-root >/dev/null 2>&1 || \
+          wp core install --url="$${WP_URL}" --title="Brotli Pingback Lab" \
+            --admin_user=admin --admin_password=admin \
+            --admin_email=admin@example.test --skip-email --allow-root
         wp option update default_pingback_flag 1 --allow-root >/dev/null 2>&1 || true
         wp option update default_ping_status open --allow-root >/dev/null 2>&1 || true
-
-        if [ -z "$$(wp post list --post_type=post --format=ids --allow-root)" ]; then
-          wp post create \
-            --post_title="Pingback target" \
-            --post_status=publish \
-            --post_content="CVE-2026-111497 lab target" \
-            --allow-root
-        fi
-
-        echo "[init] posts:"
+        wp post list --post_type=post --format=ids --allow-root | grep -q . || \
+          wp post create --post_title="Pingback target" --post_status=publish \
+            --post_content="CVE-2026-111497 lab target" --allow-root
         wp post list --post_type=post --fields=ID,post_title,ping_status --allow-root
-        echo "[init] home: $$(wp option get home --allow-root)"
-        echo "[init] done"
 
 volumes:
   db_data:
