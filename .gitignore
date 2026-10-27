@@ -1,0 +1,24 @@
+# Generated payloads (the 23 MB crash stream is never committed)
+lab/attacker/*.br
+payloads/
+*.br
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Local configuration
+.env
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Lab artifacts
+*.log
+core
+core.*
