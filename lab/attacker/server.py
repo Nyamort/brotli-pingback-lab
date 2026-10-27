@@ -22,8 +22,8 @@ has a one-byte partial buffer (`buffer_length == 1`).  When chunk 2 arrives
 in a separate read, the vulnerable decoder copies it into the fixed 8-byte
 inline buffer without a bounds check and overwrites `pos`/`max_distance`.
 
-Do not expose this server to the public Internet except through a tunnel you
-control, and only while testing a system you own.
+Do not expose this server to the public Internet; keep it on the lab network,
+and only test systems you own.
 """
 
 from __future__ import annotations

@@ -145,7 +145,7 @@ Send `--workers 4 --count 4` to take the whole pool down briefly.
 
 | Observation | Likely cause |
 |---|---|
-| XML-RPC fault “The source URL does not exist” | WordPress could not fetch the payload; check tunnel/host/allowlist/timeout |
+| XML-RPC fault “The source URL does not exist” | WordPress could not fetch the payload; check host/allowlist/timeout |
 | XML-RPC fault “A title on that page cannot be found” | the payload decoded as something that is not HTML; for the hang/crash this should not happen |
 | HTTP 200 with a fault, fast | decoder is patched or the payload was not `Content-Encoding: br` |
 | `HTTP 502` immediately (no delay) | nginx cannot reach php-fpm; the lab is not healthy |
@@ -180,10 +180,9 @@ decoder rejects it with a format error; a vulnerable decoder either spins
   Brotli 1.1.0/1.2.0. Other versions may need different offsets.
 * The 23 MB payload must reach the target within WordPress's 10-second HTTP
   timeout and must preserve the chunk boundary. This is reliable on the
-  local Docker network; a slow tunnel may not work.
-* A Cloudflare Quick Tunnel decodes `Content-Encoding: br` at the edge, so
-  the target receives the decoded body. Do not use a Quick Tunnel URL for
-  `--payload-url` if you expect a crash; see [`cloudflare.md`](cloudflare.md).
+  local Docker network; a slow or buffering relay may not work.
+* The payload must be served byte-for-byte. An HTTP proxy or CDN that
+  decodes `Content-Encoding: br` will neutralize it.
 * The PoC classifies 502/connection reset as “crashed”. Confirm with the
   php-fpm log (`signal 11`) before drawing conclusions.
 * No RCE is attempted or provided.

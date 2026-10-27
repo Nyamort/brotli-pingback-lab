@@ -152,10 +152,8 @@ corrupts the body. Either:
 * reject the response (5xx to the fetcher), or
 * decode it in a patched proxy and re-encode as `identity`/`gzip`.
 
-Make sure the proxy itself uses a patched Brotli library. In this lab, a
-Cloudflare Quick Tunnel performs exactly this decode-and-forward step and
-neutralizes the payload (see [`cloudflare.md`](cloudflare.md)); it is a real
-compensating control only because Cloudflare's edge is patched.
+Make sure the proxy itself uses a patched Brotli library; otherwise the
+crash simply moves to the proxy.
 
 ---
 
@@ -196,8 +194,7 @@ alert on 502/504 spikes.
 ## 5. Network controls
 
 * Put the web tier behind an egress proxy with an allowlist. WordPress has
-  no legitimate reason to fetch `*.trycloudflare.com`, `*.ngrok.io`, or a
-  random VPS.
+  no legitimate reason to fetch a random VPS or an unapproved relay.
 * Block outbound HTTP to IP literals and newly registered domains, if your
   environment allows it.
 * Restrict inbound `/xmlrpc.php` to known pingback sources or disable it.

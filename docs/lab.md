@@ -9,7 +9,6 @@
 | `nginx` | `nginx:1.27-alpine` | HTTP front end | `8080` |
 | `attacker` | built from `lab/attacker` | payload generator + HTTP server | `8081` |
 | `wp-init` | `wordpress:cli` | one-shot WordPress installer | — |
-| `cloudflared` | `cloudflare/cloudflared` | optional Quick Tunnel | — |
 
 The default Compose project name is `brotli-pingback-lab`.
 
@@ -212,10 +211,10 @@ Remove this volume from `docker-compose.yml`:
 - ./lab/wordpress/mu-plugins:/var/www/html/wp-content/mu-plugins:ro
 ```
 
-Then use a public payload URL that **preserves the raw bytes** (a VPS with a
-public IP, or a raw TCP tunnel you control) so `wp_safe_remote_get()` accepts
-the source. A Cloudflare Quick Tunnel decodes `Content-Encoding: br` at the
-edge and will not trigger the bug; see [`cloudflare.md`](cloudflare.md).
+Then serve the payload from a public host that **preserves the raw bytes**
+(for example a VPS with a public IP) so `wp_safe_remote_get()` accepts the
+source. An HTTP proxy or CDN that decodes `Content-Encoding: br` will
+neutralize the payload.
 
 ### Different payload delay
 
@@ -334,5 +333,5 @@ make clean     # remove generated payloads and __pycache__
 * The attacker holds the 23 MB payload in memory and writes it to
   `/payloads` inside the container.
 
-The lab does not need Internet access in local mode. Internet is only needed
-to pull images and, optionally, to run the Cloudflare tunnel.
+The lab does not need Internet access at runtime. Internet is only needed
+to pull the Docker images.

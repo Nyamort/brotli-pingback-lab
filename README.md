@@ -74,16 +74,11 @@ WARNING: [pool www] child 43 exited on signal 15 (SIGTERM) after 15.1 seconds fr
                     |                        |  86 B / 23 MB  |  |
                     |                        +----------------+  |
                     +---------------------------------------------+
-
-  Optional: cloudflared --url http://attacker:8080
-            -> https://<random>.trycloudflare.com
-            (Quick Tunnel, no account; NOTE: it decodes br at the edge,
-             so use the local attacker URL for the crash/hang)
 ```
 
 The WordPress site is exposed on `http://localhost:8080`. The payload server
-is exposed on `http://localhost:8081` for debugging. In tunnel mode, only the
-payload server is published to the Internet.
+is exposed on `http://localhost:8081` for debugging and is also reachable by
+WordPress as `http://attacker:8080` on the Docker network.
 
 ---
 
@@ -249,14 +244,13 @@ for the details.
 
 ```text
 .
-├── docker-compose.yml           # WordPress + MariaDB + nginx + attacker (+ tunnel)
+├── docker-compose.yml           # WordPress + MariaDB + nginx + attacker
 ├── Makefile                     # one-command lab workflow
 ├── docs/
 │   ├── vulnerability.md         # CVE, root cause, affected versions
 │   ├── attack-chain.md          # WordPress pingback -> libcurl -> Brotli
 │   ├── lab.md                   # setup, services, troubleshooting
 │   ├── poc.md                   # PoC usage and expected output
-│   ├── cloudflare.md            # try.cloudflare.com Quick Tunnel
 │   ├── detection.md             # logs, metrics, WAF/egress rules
 │   └── mitigation.md            # patching and compensating controls
 ├── lab/
@@ -275,48 +269,11 @@ for the details.
 * Docker Engine 24+ with Compose v2
 * Python 3.10+ (PoC and payload generator; standard library only)
 * ~1.5 GB disk for images, ~200 MB RAM for the lab
-* Optional: outbound Internet for the Cloudflare Quick Tunnel
+* Internet access only to pull the Docker images
 
 Tested on Linux x86-64. The crash tail depends on the x86-64
 `BrotliDecoderState` layout of Brotli 1.1.0/1.2.0; the pinned WordPress
 image supplies exactly that.
-
----
-
-## Cloudflare Quick Tunnel
-
-The payload server can be published with `try.cloudflare.com` (Quick Tunnel,
-no account):
-
-```bash
-make tunnel          # starts cloudflared and prints the URL
-make tunnel-url      # prints it again later
-```
-
-The tunnel exposes **only the payload server**, never the WordPress site.
-
-> **Lab finding: Quick Tunnel decodes `Content-Encoding: br` at the edge.**
-> In our tests, `/small.br` (86 B) arrived as **16 MiB of `A`** (its decoded
-> body) and `/payload.br` (23 MB) arrived as **0 bytes**. The malicious Brotli
-> stream never reaches WordPress, so the pingback does not crash or hang
-> through a Quick Tunnel. `no-transform`, `Content-Disposition: attachment`,
-> and `Accept-Encoding: br` did not change this.
->
-> This is a real CDN-level mitigation and a useful result, but it means the
-> tunnel is not a delivery path for the exploit. Use the local
-> `http://attacker:8080` URL for `make hang` / `make crash`. If you need a
-> public relay that preserves bytes, use a VPS with a public IP or a raw TCP
-> tunnel you control, and verify with:
->
-> ```bash
-> curl --raw -H 'Accept-Encoding: br' -o /tmp/x.br \
->   -w '%{size_download}\n' https://your-relay/small.br
-> # must print 86, and xxd must start with 20 00 10 41
-> ```
-
-The tunnel remains useful for demonstrating the public-URL/SSRF path and for
-testing egress detections. The full details, including the observed sizes and
-workarounds, are in [`docs/cloudflare.md`](docs/cloudflare.md).
 
 ---
 
@@ -326,7 +283,6 @@ workarounds, are in [`docs/cloudflare.md`](docs/cloudflare.md).
 * [Attack chain](docs/attack-chain.md) — pingback → `wp_safe_remote_get` → libcurl → Brotli
 * [Lab](docs/lab.md) — services, setup, troubleshooting
 * [PoC](docs/poc.md) — modes, options, expected results
-* [Cloudflare](docs/cloudflare.md) — Quick Tunnel walkthrough
 * [Detection](docs/detection.md) — what to log and alert on
 * [Mitigation](docs/mitigation.md) — patch first, then compensating controls
 
@@ -341,10 +297,10 @@ to provide a weapon.
 * The PoC is rate-limited to 32 requests and refuses public targets by default.
 * The payload is crash-only; there is no RCE chain.
 * The lab's WordPress image is the official image plus a 10-line mu-plugin
-  that allowlists the Docker-internal `attacker` hostname. Remove it in
-  a public-payload mode if you want a completely stock install.
-* Do not expose the WordPress container to the Internet. The payload server is
-  the only service meant to be published.
+  that allowlists the Docker-internal `attacker` hostname. Remove it if you
+  serve the payload from a public host and want a completely stock install.
+* The lab is local-only. Do not expose the WordPress container or the payload
+  server to the Internet.
 
 See [SECURITY.md](SECURITY.md).
 

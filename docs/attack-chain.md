@@ -82,10 +82,10 @@ if ( 127 === $parts[0] || 10 === $parts[0] || 0 === $parts[0]
 }
 ```
 
-This is why a public URL is the natural delivery mechanism: a Cloudflare
-public relay hostname resolves to a public address and passes the check. In the local lab, the `attacker` service resolves to a
-private Docker address, so the lab ships a 10-line mu-plugin that allowlists
-exactly that hostname:
+This is why a public URL is the natural delivery mechanism: a public relay
+hostname resolves to a public address and passes the check. In the local lab,
+the `attacker` service resolves to a private Docker address, so the lab ships
+a 10-line mu-plugin that allowlists exactly that hostname:
 
 ```php
 add_filter( 'http_request_host_is_external', function ( $external, $host ) {
@@ -94,8 +94,8 @@ add_filter( 'http_request_host_is_external', function ( $external, $host ) {
 ```
 
 The mu-plugin is a lab harness. It does not weaken general SSRF protection
-and is inert in tunnel mode. Remove it if you want a completely stock
-WordPress container.
+and is inert when the payload is served from a public host. Remove it if you
+want a completely stock WordPress container.
 
 ---
 
@@ -216,8 +216,7 @@ did not crash; the chunked response with a delay did.
 The delay must be shorter than WordPress's 10-second HTTP timeout. The lab
 uses 1 second on localhost. On a byte-preserving public relay, keep the delay
 at 1–2 seconds and make sure the 23 MB body can be uploaded within the
-remaining budget. A relay that decodes `br` (see 6.3) cannot deliver this
-payload at all.
+remaining budget. A relay that decodes `br` cannot deliver this payload at all.
 
 ---
 
@@ -265,41 +264,6 @@ WARNING: [pool www] child 42 exited on signal 11 (SIGSEGV) after 1.2 seconds fro
 
 This is a real memory-corruption crash, not a PHP exception. It is the
 availability outcome of CVE-2026-111497.
-
----
-
-### 6.3 A proxy that decodes `br` breaks the chain
-
-The attack needs an end-to-end byte-preserving path. If an intermediary
-terminates the HTTP content encoding, decodes the body, and re-encodes it
-with a patched library, the vulnerable decoder never sees the attacker's
-bytes.
-
-This is not theoretical. In the lab, the same 86-byte payload behaves like
-this through a Cloudflare Quick Tunnel:
-
-| Origin | Through Cloudflare Quick Tunnel |
-|---|---|
-| 86 bytes | 16,777,218 bytes (16 MiB of `A`) |
-| 23,068,820 bytes | 0 bytes |
-
-Cloudflare decodes `Content-Encoding: br` at the edge and forwards the
-decoded body without the header. The target receives either the 16 MiB
-expansion or an empty body, so libcurl never invokes the vulnerable Brotli
-decoder.
-
-`Cache-Control: no-transform`, `Content-Disposition: attachment`,
-`Content-Type: application/x-brotli`, and a client `Accept-Encoding: br`
-did not change the result.
-
-Two lessons:
-
-* A CDN, reverse proxy, or service mesh that terminates Brotli can be a real
-  compensating control — **provided the intermediary itself uses a patched
-  library**. A vulnerable proxy just moves the crash to the edge.
-* Detections and exploitability assessments must account for intermediaries
-  that decode, buffer, or rewrite bodies. A payload that works on a direct
-  Docker network may be neutralized on the public path, and vice versa.
 
 ---
 
@@ -361,7 +325,7 @@ outbound requests to the same URL, the second without `Accept-Encoding`.
 
 | Constraint | Effect on the attack |
 |---|---|
-| `timeout => 10` | 23 MB must arrive within ~10 s; local lab is fine, slow tunnels are not |
+| `timeout => 10` | 23 MB must arrive within ~10 s; local lab is fine, slow relays are not |
 | `redirection => 0` | no redirect to the payload; host it directly |
 | `limit_response_size => 150 KB` | applies to decoded bytes; zero-output streams bypass it |
 | `wp_safe_remote_get` | private IPs rejected; use a public relay or the lab allowlist |

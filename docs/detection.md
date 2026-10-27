@@ -118,7 +118,7 @@ attacker-controlled host. If you have an egress proxy, firewall, or DNS
 logging, alert on:
 
 * `POST /xmlrpc.php` followed by an outbound `GET` to a host never seen
-  before (especially a `trycloudflare.com`, `ngrok`, or short-lived domain);
+  before (especially a short-lived or newly registered domain);
 * outbound HTTP responses with `Content-Encoding: br` and a body that
   decompresses to nothing or to a very small output;
 * a 20+ MB outbound response to the web tier;
@@ -157,8 +157,8 @@ Rules that help:
   (at the egress proxy, not at the inbound WAF);
 * cap outbound response size for web-tier fetches (e.g. 1 MB) — the 23 MB
   trigger exceeds it, while the 86-byte hang does not;
-* block requests to `*.trycloudflare.com` and similar ephemeral tunnels from
-  the web tier unless explicitly required.
+* block requests to unapproved relay domains from the web tier unless
+  explicitly required.
 
 Do **not** rely on a rule that only inspects the decoded body size. The
 crash payload decodes to zero bytes until the final tail; a WAF that

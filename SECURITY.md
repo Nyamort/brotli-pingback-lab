@@ -51,8 +51,6 @@ an exploit before coordinated disclosure.
 
 * The lab's WordPress admin password is `admin`. It is for a disposable
   local container only. Never expose the site.
-* The Cloudflare Quick Tunnel exposes the payload server publicly. Stop it
-  when you are done.
 * The 23 MB payload is generated at runtime and is not committed.
 * The lab's mu-plugin only allowlists the Docker-internal hostname
   `attacker`; it is not a production SSRF bypass.

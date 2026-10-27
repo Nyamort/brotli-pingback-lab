@@ -14,9 +14,8 @@
  *   The lab's payload server is a Docker service named "attacker" with a
  *   private address, so the stock filter would refuse it.
  *
- *   In tunnel mode the payload URL is https://<random>.trycloudflare.com,
- *   which resolves to public Cloudflare addresses. This file is then inert
- *   and can be removed entirely.
+ *   If the payload is served from a public host, this file is inert and can
+ *   be removed entirely.
  *
  *   This is a lab harness, not a production mu-plugin.
  */

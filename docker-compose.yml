@@ -5,10 +5,6 @@ name: brotli-pingback-lab
 # Default mode is fully local: WordPress talks to the `attacker` service over
 # the Docker network.  The image is the official WordPress FPM image, pinned
 # to the digest that shipped the vulnerable libbrotlidec 1.1.0.
-#
-# Tunnel mode:  docker compose --profile tunnel up -d --build
-# Then read the https://<random>.trycloudflare.com URL from:
-#   docker compose logs -f cloudflared
 
 services:
   db:
@@ -162,17 +158,6 @@ services:
         wp post list --post_type=post --fields=ID,post_title,ping_status --allow-root
         echo "[init] home: $$(wp option get home --allow-root)"
         echo "[init] done"
-
-  # Cloudflare Quick Tunnel (try.cloudflare.com).  It exposes ONLY the
-  # payload server, never the WordPress site.
-  cloudflared:
-    image: cloudflare/cloudflared:latest
-    profiles: ["tunnel"]
-    restart: unless-stopped
-    depends_on:
-      attacker:
-        condition: service_started
-    command: tunnel --no-autoupdate --url http://attacker:8080
 
 volumes:
   db_data:
