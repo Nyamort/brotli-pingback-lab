@@ -2,7 +2,7 @@
 
 ## 1.0.1 — 2026-10-27
 
-* Removed the optional Cloudflare Quick Tunnel profile, Makefile targets, and
+* Removed the optional public tunnel profile, Makefile targets, and
   documentation. The lab is local-only again.
 
 ## 1.0.0 — 2026-10-27
