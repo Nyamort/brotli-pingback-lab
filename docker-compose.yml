@@ -64,7 +64,7 @@ services:
     restart: unless-stopped
     depends_on:
       wordpress:
-        condition: service_started
+        condition: service_healthy
     ports:
       - "${WP_PORT:-8080}:80"
     volumes:
