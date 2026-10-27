@@ -20,7 +20,7 @@ kills or stalls the worker:
 ## Quickstart
 
 ```bash
-git clone <this-repo> brotli-pingback-lab
+git clone https://github.com/Nyamort/brotli-pingback-lab.git
 cd brotli-pingback-lab
 cp .env.example .env
 
