@@ -314,9 +314,9 @@ to provide a weapon.
 * The payload is crash-only; there is no RCE chain.
 * The lab's WordPress image is the official image plus a 10-line mu-plugin
   that allowlists the Docker-internal `attacker` hostname. Remove it in
-  tunnel mode if you want a completely stock install.
-* Do not expose the WordPress container to the Internet. Only the payload
-  server is meant to be tunneled.
+  a public-payload mode if you want a completely stock install.
+* Do not expose the WordPress container to the Internet. The payload server is
+  the only service meant to be published.
 
 See [SECURITY.md](SECURITY.md).
 

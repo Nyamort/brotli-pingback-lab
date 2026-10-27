@@ -273,8 +273,8 @@ WordPress could not fetch the payload. Check, in order:
 2. `docker compose exec wordpress php -r 'var_dump(@file_get_contents("http://attacker:8080/health"));'`;
 3. the mu-plugin is mounted:
    `docker compose exec wordpress ls -l wp-content/mu-plugins`;
-4. the source URL is public (tunnel mode) or the host is `attacker` (local
-   mode);
+4. the source URL is public and byte-preserving (a decoding CDN will not
+   work), or the host is `attacker` (local mode);
 5. the 23 MB transfer did not exceed the 10-second timeout.
 
 ### `make crash` returns a fault, no SIGSEGV

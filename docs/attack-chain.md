@@ -57,7 +57,7 @@ crashes, the function never returns to the link check.
 | `pingback.ping` enabled | yes (WordPress default) |
 | Target URL maps to a post | `/?p=1` (Hello World) |
 | Pings open on that post | yes (default `open`) |
-| Source URL fetchable by WordPress | `http://attacker:8080/...` in local mode, tunnel in public mode |
+| Source URL fetchable by WordPress | `http://attacker:8080/...` locally, or a byte-preserving public relay |
 | Source not already registered | PoC adds a unique `?cb=` parameter |
 
 `redirection => 0` means WordPress will not follow a redirect to the payload;
@@ -83,8 +83,7 @@ if ( 127 === $parts[0] || 10 === $parts[0] || 0 === $parts[0]
 ```
 
 This is why a public URL is the natural delivery mechanism: a Cloudflare
-Quick Tunnel hostname resolves to public Cloudflare anycast addresses and
-passes the check. In the local lab, the `attacker` service resolves to a
+public relay hostname resolves to a public address and passes the check. In the local lab, the `attacker` service resolves to a
 private Docker address, so the lab ships a 10-line mu-plugin that allowlists
 exactly that hostname:
 
@@ -215,8 +214,10 @@ verified empirically: a plain `Content-Length` response with the same bytes
 did not crash; the chunked response with a delay did.
 
 The delay must be shorter than WordPress's 10-second HTTP timeout. The lab
-uses 1 second on localhost. Over a tunnel, keep the delay at 1–2 seconds and
-make sure the 23 MB body can be uploaded within the remaining budget.
+uses 1 second on localhost. On a byte-preserving public relay, keep the delay
+at 1–2 seconds and make sure the 23 MB body can be uploaded within the
+remaining budget. A relay that decodes `br` (see 6.3) cannot deliver this
+payload at all.
 
 ---
 
@@ -363,7 +364,7 @@ outbound requests to the same URL, the second without `Accept-Encoding`.
 | `timeout => 10` | 23 MB must arrive within ~10 s; local lab is fine, slow tunnels are not |
 | `redirection => 0` | no redirect to the payload; host it directly |
 | `limit_response_size => 150 KB` | applies to decoded bytes; zero-output streams bypass it |
-| `wp_safe_remote_get` | private IPs rejected; use a public tunnel or the lab allowlist |
+| `wp_safe_remote_get` | private IPs rejected; use a public relay or the lab allowlist |
 | `pings_open` + valid post | `/?p=1` works after a default install |
 | unique source URL | add a cache-buster to avoid “pingback already registered” |
 | chunk boundary | the 23 MB tail must arrive in a separate decoder call |
